@@ -1,20 +1,24 @@
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
-import time
-import random
 from sqlalchemy import create_engine
 from sqlalchemy import text
+import random
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.5195.125 Safari/537.36",
+]
 
 header = {
     "accept": "*/*",
     "origin": "https://www.sendo.vn",
     "referer": "https://www.sendo.vn/",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    "user-agent": random.choice(USER_AGENTS),
 }
 
 
@@ -33,14 +37,14 @@ def get_sub_category_list(ti):
             temp_list.append(sub_category_url_key)
         category_url_key = cartegory["url_key"]
         sub_category_dict[category_url_key] = temp_list
-        ti.xcom_push(key="sub_category_dict", value=sub_category_dict)
+    ti.xcom_push(key="sub_category_dict", value=sub_category_dict)
 
 
 def get_product(ti):
     message = ti.xcom_pull(
         task_ids="task_get_sub_category_dict", key="sub_category_dict"
     )
-    all_product = pd.DataFrame()
+    all_product = []
     for category, sub_categories in message.items():
         for sub_category in sub_categories:
             page = 1
@@ -56,11 +60,10 @@ def get_product(ti):
                 df = pd.DataFrame.from_dict(data)
                 df["category"] = category
                 df["sub_category"] = sub_category
-                all_product = pd.concat([all_product, df], ignore_index=True)
+                all_product.append(df)
                 page += 1
             print(f"Đã quét subcategory: {sub_category} của category: {category}")
-            break
-        break
+    all_product = pd.concat(all_product, ignore_index=True)
     all_product = all_product[
         [
             "product_id",
@@ -75,17 +78,14 @@ def get_product(ti):
             "sub_category",
         ]
     ]
-    print(all_product.shape)
     ti.xcom_push(key="all_product", value=all_product)
 
 
 def get_shop_info(ti):
     message = ti.xcom_pull(task_ids="task_get_product", key="all_product")
-    print(message.shape)
     message = message.drop_duplicates(subset=["shop_id"])
-    print(message.shape)
     products = message["category_path"]
-    all_shop_info = pd.DataFrame()
+    all_shop_info = []
     for product in products:
         reponse = requests.get(
             f"https://detail-api.sendo.vn/full/{product.replace('.html', '')}",
@@ -93,8 +93,8 @@ def get_shop_info(ti):
         )
         content = reponse.json()
         shop_info = content["data"]["shop_info"]
-        df_shop_info = pd.DataFrame.from_dict([shop_info])
-        all_shop_info = pd.concat([all_shop_info, df_shop_info], ignore_index=True)
+        all_shop_info.append(shop_info)
+    all_shop_info = pd.DataFrame.from_dict(all_shop_info)
     all_shop_info = all_shop_info[
         [
             "shop_id",
@@ -127,7 +127,7 @@ def get_rating(ti, part):
         part
     ]
     shop_ids = message["shop_id"]
-    all_rating = pd.DataFrame()
+    all_rating = []
     for shop_id in shop_ids:
         page = 1
         while True:
@@ -141,9 +141,10 @@ def get_rating(ti, part):
                 break
             df = pd.DataFrame.from_dict(ratings)
             df["shop_id"] = shop_id
-            all_rating = pd.concat([all_rating, df], ignore_index=True)
+            all_rating.append(df)
             page += 1
         print(f"Đã lấy đánh giá của {shop_id}")
+    all_rating = pd.concat(all_rating, ignore_index=True)
     all_rating = all_rating[
         [
             "rating_id",
@@ -204,9 +205,7 @@ def insert_rating_into_db(ti, part):
 
 def insert_product_and_shop_into_db(ti):
     shop_info = ti.xcom_pull(task_ids="task_get_shop_info", key="all_shop_info")
-    print(shop_info.shape)
     product_detail = ti.xcom_pull(task_ids="task_get_product", key="all_product")
-    print(product_detail.shape)
     engine = create_engine("mysql+mysqlconnector://sendo:sendo@mysql-sendo/sendo")
     shop_info.to_sql(
         "temp_shop_info",
