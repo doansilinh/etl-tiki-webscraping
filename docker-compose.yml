@@ -81,7 +81,28 @@ x-airflow-common:
     postgres:
       condition: service_healthy
 
+networks:
+  mynetwork:
+    driver: bridge
+
 services:
+
+  mysql-sendo:
+    image: mysql:9.2.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: sendo
+      MYSQL_DATABASE: sendo
+      MYSQL_USER: sendo
+      MYSQL_PASSWORD: sendo
+    ports:
+      - "3306:3306"
+    networks:
+      - mynetwork
+    volumes:
+      - ./sql/dwh.sql:/docker-entrypoint-initdb.d/dwh.sql
+      - mysql-db-volume:/var/lib/mysql
+
   postgres:
     image: postgres:13
     environment:
@@ -96,6 +117,8 @@ services:
       retries: 5
       start_period: 5s
     restart: always
+    networks:
+      - mynetwork
 
 
   airflow-webserver:
@@ -114,6 +137,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+    - mynetwork
 
   airflow-scheduler:
     <<: *airflow-common
@@ -129,6 +154,8 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    networks:
+    - mynetwork
 
 
   airflow-init:
@@ -194,6 +221,8 @@ services:
     user: "0:0"
     volumes:
       - ${AIRFLOW_PROJ_DIR:-.}:/sources
+    networks:
+      - mynetwork
 
   airflow-cli:
     <<: *airflow-common
@@ -207,6 +236,8 @@ services:
       - bash
       - -c
       - airflow
+    networks:
+      - mynetwork
 
   # You can enable flower by adding "--profile flower" option e.g. docker-compose --profile flower up
   # or by explicitly targeted on the command line e.g. docker-compose up flower.
@@ -215,3 +246,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  mysql-db-volume:
